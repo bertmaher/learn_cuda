@@ -85,8 +85,9 @@ void mish_oneThreadPerElt_vectorized(float* d_in, float* d_out, int n) {
 }
 
 void launch_oneThreadPerElt_vectorized(float* d_in, float* d_out, int n) {
-  int blocks = ceildiv(n / 4, 1024);
-  mish_oneThreadPerElt_vectorized<<<blocks, 1024>>>(d_in, d_out, n);
+  int threads = 512;
+  int blocks = ceildiv(n / 4, threads);
+  mish_oneThreadPerElt_vectorized<<<blocks, threads>>>(d_in, d_out, n);
 }
 
 __global__
@@ -99,6 +100,65 @@ void mish_gridStride_vectorized(float* d_in, float* d_out, int n) {
 
 void launch_gridStride_vectorized(float* d_in, float* d_out, int n, int blocks, int threads) {
   mish_gridStride_vectorized<<<blocks, threads>>>(d_in, d_out, n);
+}
+
+__global__
+void mish_onethread_vec_unroll(float* d_in, float* d_out, int n) {
+  int i = 8 * (blockDim.x * blockIdx.x + threadIdx.x);
+  if (i < n) {
+    float4 f1 = *reinterpret_cast<float4*>(d_in + i);
+    float4 f2 = *reinterpret_cast<float4*>(d_in + i + 4);
+    *reinterpret_cast<float4*>(d_out + i) = f1 * tanh(log1p(exp(f1)));
+    *reinterpret_cast<float4*>(d_out + i + 4) = f2 * tanh(log1p(exp(f2)));
+  }
+}
+
+void launch_onethread_vec_unroll(float* d_in, float* d_out, int n) {
+  int blocks = ceildiv(n / 8, 1024);
+  mish_onethread_vec_unroll<<<blocks, 1024>>>(d_in, d_out, n);
+}
+
+__global__
+void mish_onethread_vec_unroll2(float* d_in, float* d_out, int n) {
+  int i = 8 * blockDim.x * blockIdx.x;
+  int ti = threadIdx.x;
+  int idx = i + 4 * ti;
+  if (i < n) {
+    float4 f1 = *reinterpret_cast<float4*>(d_in + idx);
+    *reinterpret_cast<float4*>(d_out + idx) = f1 * tanh(log1p(exp(f1)));
+    float4 f2 = *reinterpret_cast<float4*>(d_in + idx + 4 * blockDim.x);
+    *reinterpret_cast<float4*>(d_out + idx + 4 * blockDim.x) = f2 * tanh(log1p(exp(f2)));
+  }
+}
+
+void launch_onethread_vec_unroll2(float* d_in, float* d_out, int n) {
+  int blocks = ceildiv(n / 8, 1024);
+  mish_onethread_vec_unroll2<<<blocks, 1024>>>(d_in, d_out, n);
+}
+
+struct float8 {
+  float f0;
+  float f1;
+  float f2;
+  float f3;
+  float f4;
+  float f5;
+  float f6;
+  float f7;
+};
+
+__global__
+void mish_onethread_vec8(float* d_in, float* d_out, int n) {
+  int i = blockDim.x * blockIdx.x + threadIdx.x;
+  if (i < n / 8) {
+    float8 f1 = reinterpret_cast<float8*>(d_in)[i];
+    reinterpret_cast<float8*>(d_out)[i] = f1; //* tanh(log1p(exp(f1)));
+  }
+}
+
+void launch_onethread_vec8(float* d_in, float* d_out, int n) {
+  int blocks = ceildiv(n / 8, 1024);
+  mish_onethread_vec8<<<blocks, 1024>>>(d_in, d_out, n);
 }
 
 __global__
@@ -130,6 +190,7 @@ void checkResult(float* in, float* out, int n) {
     float err = std::abs(ref - out[i]);
     //std::cout << "ref: " << ref << " out: " << out[i] << "\n";
     if (err > 1e-6) {
+      //std::cout << "idx: " << i << " ref: " << ref << " out: " << out[i] << "\n";
       errors++;
     }
     maxError = std::max(maxError, err);
@@ -185,6 +246,7 @@ int main() {
   checkCudaErrors(cudaMemcpy(d_x, x, N * sizeof(float), cudaMemcpyHostToDevice));
   checkCudaErrors(cudaMemcpy(d_y, y, N * sizeof(float), cudaMemcpyHostToDevice));
 
+  /*
   for (int threadsPerBlock = 32; threadsPerBlock <= 1024; threadsPerBlock <<= 1) {
     std::cout << "One thread per elt, " << threadsPerBlock << " threads per block\n";
     benchmark([&](float* d_in, float* d_out, int n) {
@@ -218,7 +280,15 @@ int main() {
 	launch_contiguous_vectorized(d_in, d_out, n, 512, 1024);
       },
       d_x, d_y, x, y, N);
+  */
 
+   benchmark(launch_oneThreadPerElt_vectorized, d_x, d_y, x, y, N);
+  // benchmark(launch_onethread_vec_unroll, d_x, d_y, x, y, N);
+  //benchmark(launch_onethread_vec_unroll2, d_x, d_y, x, y, N);
+  //benchmark(launch_onethread_vec8, d_x, d_y, x, y, N);
+ 
+  cudaDeviceSynchronize();
+  
   cudaFree(d_x);
   cudaFree(d_y);
   free(x);

@@ -20,4 +20,4 @@ for dur in durs[:20]:
     print(dur)
 dur = torch.sum(torch.tensor(durs)).item() / 500 
 print(f"duration (ms): {dur}")
-print(f"gb/s: {N * 4 * 3 / dur / 1e6}")
+print(f"gb/s: {N * 4 * 2 / dur / 1e6}")
